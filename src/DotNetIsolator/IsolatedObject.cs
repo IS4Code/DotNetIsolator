@@ -1,4 +1,7 @@
-﻿namespace DotNetIsolator;
+﻿using System.Linq.Expressions;
+using System.Reflection;
+
+namespace DotNetIsolator;
 
 public class IsolatedObject : IDisposable
 {
@@ -66,6 +69,23 @@ public class IsolatedObject : IDisposable
     public void InvokeVoid<T0, T1, T2, T3, T4>(string methodName, T0 param0, T1 param1, T2 param2, T3 param3, T4 param4)
         => FindMethod(methodName, 5).InvokeVoid(this, param0, param1, param2, param3, param4);
 
+    static readonly MethodInfo AsInterfaceMethod =
+        ((MethodCallExpression)
+            ((Expression<Func<object>>)(() => default(IsolatedObject)!.AsInterface<object>())).Body
+        ).Method.GetGenericMethodDefinition();
+
+    public T AsInterface<T>() where T : class
+    {
+        var proxy = DispatchProxy.Create<T, Proxy>();
+        ((Proxy)(object)proxy).instance = this;
+        return proxy;
+    }
+
+    static readonly MethodInfo DeserializeMethod =
+        ((MethodCallExpression)
+            ((Expression<Func<object>>)(() => default(IsolatedObject)!.Deserialize<object>())).Body
+        ).Method.GetGenericMethodDefinition();
+
     public T Deserialize<T>()
     {
         return _runtimeInstance.InvokeDotNetMethod<T>(0, this, default);
@@ -89,5 +109,26 @@ public class IsolatedObject : IDisposable
     ~IsolatedObject()
     {
         Dispose(false);
+    }
+
+    class Proxy : DispatchProxy
+    {
+        internal IsolatedObject instance = null!;
+
+        protected override object? Invoke(MethodInfo targetMethod, object[] args)
+        {
+            var method = instance._runtimeInstance.GetMethod(targetMethod.DeclaringType, targetMethod.Name, args.Length);
+            var result = method.Invoke<IsolatedObject>(instance);
+            if (result == null)
+            {
+                return null;
+            }
+            var returnType = targetMethod.ReturnType;
+            if (returnType.IsInterface)
+            {
+                return AsInterfaceMethod.MakeGenericMethod(returnType).Invoke(result, Array.Empty<object>());
+            }
+            return DeserializeMethod.MakeGenericMethod(returnType).Invoke(result, Array.Empty<object>());
+        }
     }
 }
